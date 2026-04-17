@@ -1,9 +1,73 @@
 #!/bin/sh
-echo "🔍 Claude Code 코드 리뷰 시작..."
+# pre-push hook: push 직전에 변경사항을 정리하고 Claude로 리뷰한 뒤 진행 여부를 확인한다.
 
-claude -p "변경된 파이썬 파일들을 리뷰하고 문제점이 있으면 알려줘. 없으면 '이상 없음'이라고 해줘." \
+set -e
+
+echo ""
+echo "🔍 Push 전 코드 리뷰를 시작합니다..."
+
+# 리뷰 기준 ref 결정: origin/main 이 있으면 그것과 비교, 없으면 최근 HEAD만.
+# determine_base: 비교 기준이 되는 원격 ref 를 반환한다.
+determine_base() {
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    echo "origin/main"
+  else
+    echo ""
+  fi
+}
+
+base_ref=$(determine_base)
+
+# 변경된 파일 목록 수집 (파이썬 파일만 리뷰 대상)
+if [ -n "$base_ref" ]; then
+  changed_files=$(git diff --name-only "$base_ref"...HEAD)
+  commit_summary=$(git log "$base_ref"..HEAD --oneline)
+else
+  changed_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files)
+  commit_summary=$(git log --oneline -5)
+fi
+
+python_files=$(printf '%s\n' "$changed_files" | grep -E '\.py$' || true)
+
+if [ -z "$python_files" ]; then
+  echo "✅ 리뷰할 파이썬 변경사항이 없습니다. Push를 진행합니다."
+  exit 0
+fi
+
+echo ""
+echo "📋 리뷰 대상 파일:"
+printf '%s\n' "$python_files" | sed 's/^/   - /'
+echo ""
+echo "📝 포함 커밋:"
+printf '%s\n' "$commit_summary" | sed 's/^/   /'
+echo ""
+echo "---------- Claude 리뷰 ----------"
+
+# Claude 로 리뷰 프롬프트 전달. Read 만 허용해 파일 내용을 직접 확인하도록 한다.
+review_prompt=$(printf '다음은 git push 직전의 변경사항이다. 각 파일을 Read 로 읽고 한국어로 답해줘.\n\n[변경된 파이썬 파일]\n%s\n\n[포함 커밋]\n%s\n\n응답 형식:\n1. 변경 요약 (파일별 2~3줄)\n2. 문제점 또는 개선 제안 (없으면 "이상 없음")\n' "$python_files" "$commit_summary")
+
+claude -p "$review_prompt" \
   --allowedTools "Read" \
   --output-format text
 
-echo "✅ 리뷰 완료. Push를 진행합니다."
-exit 0!
+echo "---------------------------------"
+echo ""
+
+# 사용자 확인. 터미널이 있을 때만 묻고, 없으면 기본 통과(비대화형 CI 대비).
+if [ -t 0 ] || [ -e /dev/tty ]; then
+  printf "리뷰 결과를 확인했습니다. Push 를 진행할까요? [y/N]: "
+  read answer </dev/tty || answer="N"
+  case "$answer" in
+    [yY]|[yY][eE][sS])
+      echo "✅ Push 를 진행합니다."
+      exit 0
+      ;;
+    *)
+      echo "❌ Push 를 취소합니다. (우회: git push --no-verify)"
+      exit 1
+      ;;
+  esac
+else
+  echo "ℹ️  비대화형 환경이라 자동 통과합니다."
+  exit 0
+fi
