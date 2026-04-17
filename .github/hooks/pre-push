@@ -6,4 +6,4 @@ claude -p "변경된 파이썬 파일들을 리뷰하고 문제점이 있으면 
   --output-format text
 
 echo "✅ 리뷰 완료. Push를 진행합니다."
-exit 0
+exit 0!
